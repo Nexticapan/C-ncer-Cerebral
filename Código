@@ -1,0 +1,129 @@
+from IPython import get_ipython
+from IPython.display import display
+
+# %% [markdown]
+# Importamos librerías
+# %%
+import os
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+
+# %% [markdown]
+# Descargamos el dataset
+# %%
+import kagglehub
+
+# Descargar la última versión del dataset
+path = kagglehub.dataset_download("gonzajl/tumores-cerebrales-mri-dataset")
+dataset_base_path = os.path.join(path, "tumores-cerebrales-mri-dataset")
+
+# %% [markdown]
+# Cargamos imágenes con filtro y muestreo aleatorio
+# %%
+IMG_SIZE = 128
+sample_fraction = 0.01  # 1%
+
+def sample_images(folder_path, label):
+    all_images = []
+    for file in os.listdir(folder_path):
+        img_path = os.path.join(folder_path, file)
+        img = cv2.imread(img_path)
+        if img is not None:
+            img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            lap = cv2.Laplacian(gray, cv2.CV_64F)
+            lap = cv2.convertScaleAbs(lap)
+            all_images.append(np.expand_dims(lap, axis=-1))
+    # Selección aleatoria de índices
+    total = len(all_images)
+    sample_size = int(total * sample_fraction)
+    if sample_size < 1:
+        sample_size = 1
+    idxs = np.random.choice(range(total), size=sample_size, replace=False)
+    sampled_images = [all_images[i] for i in idxs]
+    labels = [label] * sample_size
+    return sampled_images, labels
+
+def load_images_with_filter(base_path):
+    X = []
+    y = []
+    
+    tumor_dirs = ['meningioma', 'glioma', 'pituitary']
+    no_tumor_dir = 'no-tumor'
+    
+    for folder in tumor_dirs:
+        folder_path = os.path.join(base_path, folder)
+        imgs, labels = sample_images(folder_path, label=1)
+        X.extend(imgs)
+        y.extend(labels)
+
+    folder_path = os.path.join(base_path, no_tumor_dir)
+    imgs, labels = sample_images(folder_path, label=0)
+    X.extend(imgs)
+    y.extend(labels)
+    
+    return np.array(X), np.array(y)
+
+# %% [markdown]
+# Preparamos los datos
+# %%
+X, y = load_images_with_filter(dataset_base_path)  
+
+X = X / 255.0  # Normalizar imágenes
+y = to_categorical(y, 2)  # One-hot encoding: [1, 0] = no tumor, [0, 1] = tumor
+
+# Splitting the data:
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# %% [markdown]
+# Construcción del Modelo
+# %%
+model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 1)),
+    MaxPooling2D(2,2),
+    Conv2D(64, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(2, activation='softmax')  # 2 clases: tumor / no tumor
+])
+
+model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
+model.summary()
+
+# %% [markdown]
+# Entrenamos el modelo
+# %%
+history = model.fit(X_train, y_train, epochs=10, batch_size=32, validation_split=0.2)
+
+# %% [markdown]
+# Evaluamos el modelo
+# %%
+loss, accuracy = model.evaluate(X_test, y_test)
+print(f"Precisión en test: {accuracy:.4f}")
+
+# %% [markdown]
+# Visualizamos algunas predicciones
+# %%
+def plot_sample_predictions(X, y_true, model, n=5):
+    preds = model.predict(X[:n])
+    for i in range(n):
+        plt.imshow(X[i].squeeze(), cmap='gray')
+        pred_label = np.argmax(preds[i])
+        true_label = np.argmax(y_true[i])
+        plt.title(f"Real: {true_label} / Pred: {pred_label}")
+        plt.axis('off')
+        plt.show()
+
+plot_sample_predictions(X_test, y_test, model)
+
+# %% [markdown]
+# Filtro Laplaciano: Se aplicó este filtro porque resalta los bordes, lo que permite destacar regiones con cambios abruptos de intensidad. Esto es útil en resonancias magnéticas, ya que los tumores suelen tener bordes definidos. El realce ayuda a que la red neuronal enfoque su aprendizaje en patrones estructurales importantes para la clasificación.
+# %%
